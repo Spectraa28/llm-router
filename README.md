@@ -97,9 +97,3 @@ Execute the unthrottled load test to populate the performance curves:
 python benchmark_100.py
 
 ```
-
-Open up `http://127.0.0.1:5001` in your browser to view real-time latency distributions, step spend accumulations, and overall cost savings graphs.
-
-🔮 Future Expansion (Next Project)
-
-This milestone marks the completion of the deterministic routing phase. Now that the baseline heuristics are optimized and verified, the next move is to build a Hybrid Dual-Routing System as a brand new project to incorporate local semantic vector embeddings alongside deterministic patterns.
