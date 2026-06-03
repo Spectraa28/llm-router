@@ -1,6 +1,9 @@
 import time 
 from google import genai
 from classifier import classify_query
+from fastapi import FastAPI
+
+app = FastAPI()
 
 LITE_MODEL = "gemini-2.5-flash-lite"
 PRO_MODEL = "gemini-2.5-flash"
