@@ -1,1 +1,8 @@
 .env
+*.pkl
+cache_store/
+mlruns/
+__pycache__/
+*.pyc
+.DS_Store
+.vscode

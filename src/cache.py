@@ -50,6 +50,18 @@ class SemanticCache:
             self.next_id = meta.get("next_id",0 )
             logger.info(f"Cache restored   -- {self.index.ntotal} entries , next_id = {self.next_id} ")
             
+            if self.redis_available:
+                redis_size = self.redis_client.dbsize()
+                if redis_size < self.index.ntotal:
+                    logger.warning(
+                        f"Redis has {redis_size} keys but FAISS has {self.index.ntotal} entries "
+                        f"— stores are out of sync. Resetting both to start clean."
+                    )
+                    self.index = faiss.IndexIDMap(faiss.IndexFlatIP(dim))
+                    self.next_id = 0
+                    self._save()
+                else:
+                    logger.info(f"Redis and FAISS in sync — {redis_size} keys.")
         else:
             logger.info("No persistent index found - Starting fresh")
             self.index = faiss.IndexIDMap(faiss.IndexFlatIP(dim))
@@ -66,33 +78,38 @@ class SemanticCache:
         logger.debug("FAISS index and metadata saved to disk")
         
     # GET 
-    def get(self,query:str) -> str | None:
-        if self.index.ntotal == 0 or not self.redis_available:
+    def get(self, query: str) -> str | None:
+        if self.index.ntotal == 0:
             return None
-        
+        if not self.redis_available:
+            logger.warning("Cache get skipped — Redis unavailable.")
+            return None
+
         clean_query = query.strip().lower()
         query_vector = self.encoder.encode(
             [clean_query], normalize_embeddings=True
         ).astype(np.float32)
-        
-        
+
         scores, indices = self.index.search(query_vector, k=1)
-        
+
         best_score = float(scores[0][0])
-        best_id = float(indices[0][0])
-        
-        logger.debug(f"Cache lookup | query='{query} | score = {best_score:.4f} | id = {best_id} ")
-        
+        best_id = int(indices[0][0])
+
+        logger.info(f"Cache lookup | score={best_score:.4f} | id={best_id} | threshold={self.threshold}")
+
         if best_score >= self.threshold:
             try:
-                cached = self.redis_client.get(f"cache: {best_id}")
+                cached = self.redis_client.get(f"cache:{best_id}")
                 if cached:
-                    logger.info(f"Cache Hit | score={best_id:.4f}")
+                    logger.info(f"Cache HIT | score={best_score:.4f} | id={best_id}")
                     return cached
-                logger.warning(f"Cache MISS (FAISS hit but redis key missing) | id={best_id}")
+                else:
+                    logger.warning(f"Cache MISS (FAISS hit but Redis key missing) | id={best_id}")
+                    return None
             except Exception as e:
-                logger.error(f"Redis GET failed after startup -  cache degraded: {e}")
-                self.redis_available = False
+                logger.error(f"Redis GET failed: {e}")
+                return None
+
         return None
     
     # SET 
@@ -125,6 +142,6 @@ class SemanticCache:
         
         logger.info(f"Cache SET | id= {self.next_id - 1} | total_enteries={self.index.ntotal}")
         
-        @property
-        def cache_size(self) -> int:
-            return self.index.ntotal
+    @property
+    def cache_size(self) -> int:
+        return self.index.ntotal

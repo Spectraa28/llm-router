@@ -18,7 +18,8 @@ GEMINI_TIMEOUT = 10
 
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-cache = SemanticCache()
+_cache = SemanticCache()
+cache = _cache
 
 def simulate_routing(query: str) -> dict:
     """
@@ -32,10 +33,14 @@ def simulate_routing(query: str) -> dict:
     4. store result in cache 
     return telemetry dict for benchmarkig and api response 
     """
+    logger.info(f"Cache size at request time: {_cache.cache_size}")
+    total_start = time.time()
+    cached_response = _cache.get(query)
+    logger.info(f"Cache get result: {cached_response}")
     total_start = time.time()
     
     # Semantic cache lookup
-    cached_response = cache.get(query)
+    cached_response = _cache.get(query)
     if cached_response:
         total_latency  = (time.time() - total_start) * 1000
         logger.info(f"CACHE HIT | query = '{query[:60]}' | latency={total_latency:.2f} ms")
@@ -44,7 +49,7 @@ def simulate_routing(query: str) -> dict:
             "route":"CACHE",
             "model":"semantic_cache",
             "score":None,
-            "routing_latency_ms":0.0,
+            "router_latency_ms":0.0,
             "llm_latency_ms":0.0,
             "total_latency_ms": round(total_latency,2),
             "input_tokens":0,
@@ -113,7 +118,7 @@ def simulate_routing(query: str) -> dict:
         raise RuntimeError(f"All models failed for query: '{query[:60]}'")
             
     # Store in cache 
-    cache.set(query,response_text)
+    _cache.set(query,response_text)
     
     total_latency = (time.time() - total_start) * 1000
     

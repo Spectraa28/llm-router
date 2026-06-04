@@ -1,0 +1,73 @@
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: llm_router_redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --dir /data
+      --appendfilename appendonly.aof
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - llm_network
+
+  mlflow:
+    image: python:3.11-slim
+    container_name: llm_router_mlflow
+    command: >
+      bash -c "pip install mlflow==3.11.1 -q &&
+      mlflow server
+      --host 0.0.0.0
+      --port 5001
+      --backend-store-uri sqlite:///mlflow.db
+      --serve-artifacts"
+    ports:
+      - "5001:5001"
+    volumes:
+      - mlflow_data:/mlflow
+    working_dir: /mlflow
+    networks:
+      - llm_network
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  app:
+    build: .
+    container_name: llm_router_app
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./src/cache_store:/app/src/cache_store
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - llm_network
+
+networks:
+  llm_network:
+    driver: bridge
+
+volumes:
+  redis_data:
+  mlflow_data:

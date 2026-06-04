@@ -20,7 +20,8 @@ app = FastAPI(
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origin=["*"],
+    allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
 )
@@ -51,7 +52,7 @@ class RouteResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status:str
-    cached_size:int
+    cache_size:int
     model_lite:str
     model_pro:str
     version:str
@@ -74,7 +75,7 @@ def health():
     """Returns API Status and cache size"""
     return HealthResponse(
         status="ok",
-        cached_size=cache.cache_size,
+        cache_size=cache.cache_size,
         model_lite="gemini-2.5-flash-lite",
         model_pro="gemini-2.5-flash",
         version="1.0.0"
@@ -147,10 +148,18 @@ def run_benchmark():
             )
             accumulated_cost += actual_cost
 
-            naive_pro_cost = (
-                (in_tokens * PRICING["PRO"]["input"]) +
-                (out_tokens * PRICING["PRO"]["output"])
-            )
+            AVG_INPUT_TOKENS = 150
+            AVG_OUTPUT_TOKENS = 100
+            if route == "CACHE":
+                naive_pro_cost = (
+                    (AVG_INPUT_TOKENS * PRICING["PRO"]["input"]) +
+                    (AVG_OUTPUT_TOKENS * PRICING["PRO"]["output"])
+                )
+            else:
+                naive_pro_cost = (
+                    (in_tokens * PRICING["PRO"]["input"]) +
+                    (out_tokens * PRICING["PRO"]["output"])
+                )
             theoretical_baseline_cost += naive_pro_cost
             total_tokens += telemetry["total_tokens"]
 
