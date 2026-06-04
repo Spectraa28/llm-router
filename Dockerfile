@@ -27,4 +27,4 @@ RUN python -c "from classifier import _train_model; _train_model()"
 
 EXPOSE 8000
 
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000", "--forwarded-allow-ips", "*"]
