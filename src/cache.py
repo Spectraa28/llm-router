@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 CACHE_SIMILARITY_THRESHOLD = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.88"))
 CACHE_STORE_DIR = os.getenv("CACHE_STORE_DIR", "cache_store")
 KEY_PREFIX = "llmrouter:cache"
+MODEL_CACHE_DIR = os.getenv("SENTENCE_TRANSFORMERS_HOME", "/app/model_cache")
 
 FAISS_INDEX_PATH = os.path.join(CACHE_STORE_DIR, "faiss.index")
 META_PATH = os.path.join(CACHE_STORE_DIR, "meta.json")
@@ -22,8 +23,8 @@ META_PATH = os.path.join(CACHE_STORE_DIR, "meta.json")
 class SemanticCache:
     def __init__(self):
         self.threshold = CACHE_SIMILARITY_THRESHOLD
-        self.encoder = SentenceTransformer("all-MiniLM-L6-v2")
-        dim = self.encoder.get_embedding_dimension()
+        self._encoder = None  # lazy — not loaded yet
+        self._dim = 384       # all-MiniLM-L6-v2 is always 384, hardcode avoids early load
 
         # ── Redis ─────────────────────────────────────────────────────────────
         try:
@@ -52,7 +53,6 @@ class SemanticCache:
             self.next_id = meta.get("next_id", 0)
             logger.info(f"Cache restored — {self.index.ntotal} entries, next_id={self.next_id}")
 
-            # ── Sync check — count only llmrouter keys ────────────────────────
             if self.redis_available:
                 llmrouter_keys = len(self.redis_client.keys(f"{KEY_PREFIX}:*"))
                 if llmrouter_keys < self.index.ntotal:
@@ -60,15 +60,27 @@ class SemanticCache:
                         f"Redis has {llmrouter_keys} llmrouter keys but FAISS has "
                         f"{self.index.ntotal} entries — out of sync. Resetting both."
                     )
-                    self.index = faiss.IndexIDMap(faiss.IndexFlatIP(dim))
+                    self.index = faiss.IndexIDMap(faiss.IndexFlatIP(self._dim))
                     self.next_id = 0
                     self._save()
                 else:
                     logger.info(f"Redis and FAISS in sync — {llmrouter_keys} keys.")
         else:
             logger.info("No persistent index found — starting fresh.")
-            self.index = faiss.IndexIDMap(faiss.IndexFlatIP(dim))
+            self.index = faiss.IndexIDMap(faiss.IndexFlatIP(self._dim))
             self.next_id = 0
+
+    # ── Lazy encoder ──────────────────────────────────────────────────────────
+    @property
+    def encoder(self):
+        if self._encoder is None:
+            logger.info("Loading SentenceTransformer model (first request)...")
+            self._encoder = SentenceTransformer(
+                "all-MiniLM-L6-v2",
+                cache_folder=MODEL_CACHE_DIR
+            )
+            logger.info("Model loaded.")
+        return self._encoder
 
     # ── Persistence ───────────────────────────────────────────────────────────
     def _save(self):
@@ -91,7 +103,6 @@ class SemanticCache:
         ).astype(np.float32)
 
         scores, indices = self.index.search(query_vector, k=1)
-
         best_score = float(scores[0][0])
         best_id = int(indices[0][0])
 

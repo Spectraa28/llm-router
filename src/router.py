@@ -1,11 +1,11 @@
 import os
 import logging
-import time 
+import time
+import threading
 from google import genai
 from classifier import classify_query
 from cache import SemanticCache
 from dotenv import load_dotenv
-import threading
 
 load_dotenv()
 
@@ -16,60 +16,65 @@ LITE_MODEL = "gemini-2.5-flash-lite"
 PRO_MODEL = "gemini-2.5-flash"
 GEMINI_TIMEOUT = 10
 
-
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-_cache = SemanticCache()
-cache = _cache
+
+# Lazy cache init — created on first use, not at import time
+_cache: SemanticCache | None = None
+
+def get_cache() -> SemanticCache:
+    global _cache
+    if _cache is None:
+        logger.info("Initializing SemanticCache (first request)...")
+        _cache = SemanticCache()
+    return _cache
+
 
 def simulate_routing(query: str) -> dict:
     """
-    Simulates the lifecycle of a query through the routing engine.
-    Returns isolated telemetry for classification overhead and inference execution.
-    
-    Full query cycle :
-    1. check semantic cache 
-    2. classify query complexity
-    3.route to Lite or pro model
-    4. store result in cache 
-    return telemetry dict for benchmarkig and api response 
+    Full query cycle:
+    1. Check semantic cache
+    2. Classify query complexity
+    3. Route to Lite or Pro model
+    4. Store result in cache
+    Returns telemetry dict for benchmarking and API response.
     """
-    logger.info(f"Cache size at request time: {_cache.cache_size}")
+    cache = get_cache()
     total_start = time.time()
-    cached_response = _cache.get(query)
-    logger.info(f"Cache get result: {cached_response}")
-    total_start = time.time()
-    
-    # Semantic cache lookup
-    cached_response = _cache.get(query)
+
+    # ── Step 1: Semantic cache lookup ─────────────────────────────────────────
+    logger.info(f"Cache size at request time: {cache.cache_size}")
+    cached_response = cache.get(query)
+
     if cached_response:
-        total_latency  = (time.time() - total_start) * 1000
-        logger.info(f"CACHE HIT | query = '{query[:60]}' | latency={total_latency:.2f} ms")
+        total_latency = (time.time() - total_start) * 1000
+        logger.info(f"CACHE HIT | query='{query[:60]}' | latency={total_latency:.2f}ms")
         return {
-            "query":query,
-            "route":"CACHE",
-            "model":"semantic_cache",
-            "score":None,
-            "router_latency_ms":0.0,
-            "llm_latency_ms":0.0,
-            "total_latency_ms": round(total_latency,2),
-            "input_tokens":0,
-            "output_tokens":0,
+            "query": query,
+            "route": "CACHE",
+            "model": "semantic_cache",
+            "score": None,
+            "router_latency_ms": 0.0,
+            "llm_latency_ms": 0.0,
+            "total_latency_ms": round(total_latency, 2),
+            "input_tokens": 0,
+            "output_tokens": 0,
             "total_tokens": 0,
-            "response":cached_response
+            "response": cached_response
         }
-    
-    
-    # Step 2 classify query 
+
+    # ── Step 2: Classify query complexity ─────────────────────────────────────
     router_start = time.time()
     routing = classify_query(query)
     router_latency = (time.time() - router_start) * 1000
-    
+
     target_model = PRO_MODEL if routing["is_complex"] else LITE_MODEL
     route = "PRO" if routing["is_complex"] else "LITE"
-    
-    # LLM inference without timeout 
-    #  Step 3: LLM Inference with Threading Timeout + Fallback
-    FALLBACK_ORDER = [target_model, PRO_MODEL if target_model == LITE_MODEL else LITE_MODEL]
+
+    # ── Step 3: LLM inference with threading timeout + fallback ───────────────
+    FALLBACK_ORDER = [
+        target_model,
+        PRO_MODEL if target_model == LITE_MODEL else LITE_MODEL
+    ]
 
     response_text = None
     input_tokens = 0
@@ -81,10 +86,10 @@ def simulate_routing(query: str) -> dict:
         result_container = {}
         error_container = {}
 
-        def call_llm():
+        def call_llm(model=attempt_model):
             try:
                 resp = client.models.generate_content(
-                    model=attempt_model,
+                    model=model,
                     contents=f"Answer this financial query concisely: {query}",
                     config={"temperature": 0.0}
                 )
@@ -116,18 +121,18 @@ def simulate_routing(query: str) -> dict:
 
     if response_text is None:
         raise RuntimeError(f"All models failed for query: '{query[:60]}'")
-            
-    # Store in cache 
-    _cache.set(query,response_text)
-    
+
+    # ── Step 4: Store in cache ─────────────────────────────────────────────────
+    cache.set(query, response_text)
+
     total_latency = (time.time() - total_start) * 1000
-    
+
     logger.info(
-        f"{route} | model={target_model}  | "
-        f"router = {router_latency:.2f}ms | llm={llm_latency:.2f}ms | "
-        f"total={total_latency:.2f}ms | tokens = {input_tokens + output_tokens}"
+        f"{route} | model={successful_model} | "
+        f"router={router_latency:.2f}ms | llm={llm_latency:.2f}ms | "
+        f"total={total_latency:.2f}ms | tokens={input_tokens + output_tokens}"
     )
-    
+
     return {
         "query": query,
         "route": route,
