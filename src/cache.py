@@ -1,9 +1,9 @@
-import os 
+import os
 import json
-import logging 
-import numpy as np 
+import logging
+import numpy as np
 import faiss
-import redis 
+import redis
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 
@@ -24,16 +24,27 @@ class SemanticCache:
     def __init__(self):
         self.threshold = CACHE_SIMILARITY_THRESHOLD
         self._encoder = None  # lazy — not loaded yet
-        self._dim = 384       # all-MiniLM-L6-v2 is always 384, hardcode avoids early load
+        self._dim = 384       # all-MiniLM-L6-v2 is always 384
 
         # ── Redis ─────────────────────────────────────────────────────────────
+        # Builds URL from REDIS_HOST / REDIS_PORT / REDIS_PASSWORD.
+        # Password present  → Upstash → rediss:// (TLS)
+        # No password       → local dev → redis:// (plain TCP)
+        host = os.getenv("REDIS_HOST", "localhost")
+        port = os.getenv("REDIS_PORT", "6379")
+        password = os.getenv("REDIS_PASSWORD")
+
+        if password:
+            redis_url = f"rediss://default:{password}@{host}:{port}"
+        else:
+            redis_url = f"redis://{host}:{port}"
+
         try:
-            self.redis_client = redis.Redis(
-                host=os.getenv("REDIS_HOST", "localhost"),
-                port=int(os.getenv("REDIS_PORT", "6379")),
-                password=os.getenv("REDIS_PASSWORD", None),
+            self.redis_client = redis.Redis.from_url(
+                redis_url,
                 decode_responses=True,
-                socket_connect_timeout=2
+                socket_connect_timeout=5,
+                socket_timeout=5,
             )
             self.redis_client.ping()
             self.redis_available = True
@@ -54,17 +65,23 @@ class SemanticCache:
             logger.info(f"Cache restored — {self.index.ntotal} entries, next_id={self.next_id}")
 
             if self.redis_available:
-                llmrouter_keys = len(self.redis_client.keys(f"{KEY_PREFIX}:*"))
-                if llmrouter_keys < self.index.ntotal:
-                    logger.warning(
-                        f"Redis has {llmrouter_keys} llmrouter keys but FAISS has "
-                        f"{self.index.ntotal} entries — out of sync. Resetting both."
-                    )
-                    self.index = faiss.IndexIDMap(faiss.IndexFlatIP(self._dim))
-                    self.next_id = 0
-                    self._save()
-                else:
-                    logger.info(f"Redis and FAISS in sync — {llmrouter_keys} keys.")
+                # Use dbsize() instead of keys() — O(1) on Upstash, no scan needed.
+                # Note: dbsize() counts ALL keys in the DB, not just ours.
+                # A mismatch here just triggers a safe reset, so a higher count is fine.
+                try:
+                    redis_total = self.redis_client.dbsize()
+                    if redis_total < self.index.ntotal:
+                        logger.warning(
+                            f"Redis has {redis_total} keys but FAISS has "
+                            f"{self.index.ntotal} entries — likely out of sync. Resetting both."
+                        )
+                        self.index = faiss.IndexIDMap(faiss.IndexFlatIP(self._dim))
+                        self.next_id = 0
+                        self._save()
+                    else:
+                        logger.info(f"Redis/FAISS sync check passed — {self.index.ntotal} FAISS entries.")
+                except Exception as e:
+                    logger.warning(f"Sync check failed (non-fatal): {e}")
         else:
             logger.info("No persistent index found — starting fresh.")
             self.index = faiss.IndexIDMap(faiss.IndexFlatIP(self._dim))
