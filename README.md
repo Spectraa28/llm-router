@@ -2,8 +2,6 @@
 
 An intelligent query routing system for financial workloads that reduces LLM inference costs by routing queries to the appropriate model tier based on complexity, with a semantic cache layer to eliminate redundant API calls.
 
-**Live Demo:** `https://your-render-url.onrender.com` ← replace after deployment
-
 ---
 
 ## Results (Synthetic Benchmark — 100 Queries)
